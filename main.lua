@@ -293,7 +293,7 @@ function Shamela:convertBook(book)
     -- The public Shamela reader exposes a key-free JSON endpoint used by its
     -- own “load next page” button. Follow nextId rather than assuming IDs are
     -- consecutive: page IDs can have gaps after editorial updates.
-    for _ = 1, MAX_PUBLIC_PAGES do
+    for page_index = 1, MAX_PUBLIC_PAGES do
         if seen[current_id] then break end
         seen[current_id] = true
         local body, err = httpGet(PUBLIC_SITE_URL .. "/ajax/pageContent/" .. id .. "/" .. current_id)
