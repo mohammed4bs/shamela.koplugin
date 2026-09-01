@@ -187,6 +187,13 @@ local function safeFilename(text)
     return text:sub(1, 100) ~= "" and text:sub(1, 100) or "book"
 end
 
+-- lua-ljsqlite3 exposes SQLite INTEGER values as LuaJIT int64 cdata. Its
+-- tostring() representation may include an "LL" suffix (e.g. "1681LL"),
+-- which is not a valid Shamela book identifier in a URL.
+local function bookId(value)
+    return tostring(tonumber(value) or value):gsub("LL$", "")
+end
+
 local function writeEpub(output, title, author, pages)
     local writer = Archiver.Writer:new{}
     if not writer:open(output .. ".tmp", "epub") then return nil, "could not create EPUB" end
@@ -279,11 +286,12 @@ end
 
 function Shamela:convertBook(book)
     local msg = InfoMessage:new{ text = _("Downloading and converting book…") }; UIManager:show(msg); UIManager:forceRePaint()
-    local body, err = httpGet(requestUrl("/patches/book-updates/" .. tostring(book.id) .. "?major_release=0&minor_release=0"))
+    local id = bookId(book.id)
+    local body, err = httpGet(requestUrl("/patches/book-updates/" .. id .. "?major_release=0&minor_release=0"))
     if not body then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("Could not request book:\n%1"), err) }); return end
     local data, json_err = decodeJson(body)
     if not data or not data.major_release_url then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("No downloadable text was returned:\n%1"), json_err or "") }); return end
-    local archive_path, page_path = cacheDir() .. "book_" .. book.id .. ".zip", cacheDir() .. "book_" .. book.id .. ".db"
+    local archive_path, page_path = cacheDir() .. "book_" .. id .. ".zip", cacheDir() .. "book_" .. id .. ".db"
     local downloaded, download_err = httpDownload(data.major_release_url, archive_path)
     if not downloaded then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("Download failed:\n%1"), download_err) }); return end
     local extracted, extract_err = extractFirstMatching(archive_path, "%.sqlite$", page_path)
