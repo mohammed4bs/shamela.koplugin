@@ -43,6 +43,8 @@ local DEFAULT_API_URL = "https://dev.shamela.ws/api/v1"
 local DEFAULT_API_KEY = ""
 local DEFAULT_DOWNLOAD_DIR = "/mnt/us/documents/"
 local USER_AGENT = "Mozilla/5.0 (compatible; KOReader Shamela plugin)"
+local PUBLIC_SITE_URL = "https://shamela.ws"
+local MAX_PUBLIC_PAGES = 5000
 
 local function safe(fn)
     return function(...)
@@ -287,19 +289,30 @@ end
 function Shamela:convertBook(book)
     local msg = InfoMessage:new{ text = _("Downloading and converting book…") }; UIManager:show(msg); UIManager:forceRePaint()
     local id = bookId(book.id)
-    local body, err = httpGet(requestUrl("/patches/book-updates/" .. id .. "?major_release=0&minor_release=0"))
-    if not body then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("Could not request book:\n%1"), err) }); return end
-    local data, json_err = decodeJson(body)
-    if not data or not data.major_release_url then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("No downloadable text was returned:\n%1"), json_err or "") }); return end
-    local archive_path, page_path = cacheDir() .. "book_" .. id .. ".zip", cacheDir() .. "book_" .. id .. ".db"
-    local downloaded, download_err = httpDownload(data.major_release_url, archive_path)
-    if not downloaded then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("Download failed:\n%1"), download_err) }); return end
-    local extracted, extract_err = extractFirstMatching(archive_path, "%.sqlite$", page_path)
-    os.remove(archive_path)
-    if not extracted then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("Could not unpack book:\n%1"), extract_err) }); return end
-    local pages, pages_err = dbRows(page_path, "SELECT part, page, content FROM page WHERE (is_deleted IS NULL OR is_deleted != 1) ORDER BY id")
-    os.remove(page_path)
-    if not pages or #pages == 0 then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = T(_("No readable pages were found:\n%1"), pages_err or "") }); return end
+    local pages, current_id, seen = {}, "1", {}
+    -- The public Shamela reader exposes a key-free JSON endpoint used by its
+    -- own “load next page” button. Follow nextId rather than assuming IDs are
+    -- consecutive: page IDs can have gaps after editorial updates.
+    for _ = 1, MAX_PUBLIC_PAGES do
+        if seen[current_id] then break end
+        seen[current_id] = true
+        local body, err = httpGet(PUBLIC_SITE_URL .. "/ajax/pageContent/" .. id .. "/" .. current_id)
+        if not body then
+            UIManager:close(msg)
+            UIManager:show(InfoMessage:new{ text = T(_("Could not load public book page:\n%1"), err) })
+            return
+        end
+        local data, json_err = decodeJson(body)
+        if not data or not data.nass then
+            UIManager:close(msg)
+            UIManager:show(InfoMessage:new{ text = T(_("The public reader returned no text:\n%1"), json_err or "") })
+            return
+        end
+        table.insert(pages, { page = data.pageNum, content = data.nass })
+        if not data.nextId or tostring(data.nextId) == "" then break end
+        current_id = tostring(data.nextId)
+    end
+    if #pages == 0 then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = _("No readable pages were found.") }); return end
     local path = getDownloadDir() .. safeFilename(book.name) .. ".epub"
     local written, write_err = writeEpub(path, book.name, "", pages)
     UIManager:close(msg)
