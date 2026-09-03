@@ -7,9 +7,14 @@ not require a Shamela API key.
 
 ## Install
 
-Copy the complete `shamela.koplugin` directory into KOReader's `plugins`
-directory, restart KOReader, then open the search menu and select **Shamela
-Library**.
+Download [shamela.koplugin.zip](https://github.com/mohammed4bs/shamela.koplugin/releases/latest/download/shamela.koplugin.zip)
+and extract it. Copy the included `shamela.koplugin` directory into KOReader's
+`plugins` directory, restart KOReader, then open the search menu and select
+**Shamela Library**.
+
+Use the release download above for installation. GitHub's **Code → Download ZIP**
+is a source archive and adds `-main` to the folder name; if you use that archive,
+rename the extracted folder to `shamela.koplugin` before installing.
 
 ## Notes
 
