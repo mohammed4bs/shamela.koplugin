@@ -117,7 +117,9 @@ local function httpDownload(url, path)
 end
 
 local function decodeJson(body)
-    local ok, value = pcall(JSON.decode, body)
+    -- luajson's default null sentinel is a function (and therefore truthy).
+    -- Use simple mode so the reader's final nextId:null becomes Lua nil.
+    local ok, value = pcall(JSON.decode, body, JSON.decode.simple)
     if not ok then return nil, tostring(value) end
     return value
 end
@@ -313,17 +315,23 @@ function Shamela:convertBook(book)
         local body, err = httpGet(PUBLIC_SITE_URL .. "/ajax/pageContent/" .. id .. "/" .. current_id)
         if not body then
             UIManager:close(msg)
-            UIManager:show(InfoMessage:new{ text = T(_("Could not load public book page:\n%1"), err) })
+            UIManager:show(InfoMessage:new{ text = T(_("Could not load public book page (book %1, page %2):\n%3"), id, current_id, err) })
             return
         end
         local data, json_err = decodeJson(body)
-        if not data or not data.nass then
+        if type(data) ~= "table" or type(data.nass) ~= "string" or data.nass == "" then
             UIManager:close(msg)
             UIManager:show(InfoMessage:new{ text = T(_("The public reader returned no text:\n%1"), json_err or "") })
             return
         end
         table.insert(pages, { page = data.pageNum, content = data.nass })
         if not data.nextId or tostring(data.nextId) == "" then break end
+        if (type(data.nextId) ~= "string" and type(data.nextId) ~= "number")
+                or not tostring(data.nextId):match("^%d+$") then
+            UIManager:close(msg)
+            UIManager:show(InfoMessage:new{ text = _("The public reader returned an invalid next-page ID. No EPUB was saved.") })
+            return
+        end
         current_id = tostring(data.nextId)
     end
     if #pages == 0 then UIManager:close(msg); UIManager:show(InfoMessage:new{ text = _("No readable pages were found.") }); return end
