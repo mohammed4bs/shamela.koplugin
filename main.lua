@@ -289,7 +289,21 @@ end
 function Shamela:convertBook(book)
     local msg = InfoMessage:new{ text = _("Downloading and converting book…") }; UIManager:show(msg); UIManager:forceRePaint()
     local id = bookId(book.id)
-    local pages, current_id, seen = {}, "1", {}
+    -- A book's internal page IDs are not guaranteed to begin with 1. Read its
+    -- public index first and use the first actual page link it contains.
+    local index_html, index_err = httpGet(PUBLIC_SITE_URL .. "/book/" .. id)
+    if not index_html then
+        UIManager:close(msg)
+        UIManager:show(InfoMessage:new{ text = T(_("Could not load public book index:\n%1"), index_err) })
+        return
+    end
+    local current_id = index_html:match("/book/" .. id .. "/(%d+)")
+    if not current_id then
+        UIManager:close(msg)
+        UIManager:show(InfoMessage:new{ text = _("This book has no readable public pages.") })
+        return
+    end
+    local pages, seen = {}, {}
     -- The public Shamela reader exposes a key-free JSON endpoint used by its
     -- own “load next page” button. Follow nextId rather than assuming IDs are
     -- consecutive: page IDs can have gaps after editorial updates.
