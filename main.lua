@@ -182,7 +182,7 @@ function Shamela:searchBooks(term)
         return nil, _("The public website returned an invalid search response. Please try again later.")
     end
     local books, seen = {}, {}
-    for _, item in ipairs(data.results.items) do
+    for item_index, item in ipairs(data.results.items) do
         if type(item) ~= "table" or (type(item.id) ~= "string" and type(item.id) ~= "number")
                 or not tostring(item.id):match("^%d+$") or type(item.text) ~= "string" then
             return nil, _("The public website returned an invalid search result.")
@@ -200,7 +200,7 @@ function Shamela:showBookList(books, title)
     if not books or #books == 0 then UIManager:show(InfoMessage:new{ text = _("No books found.") }); return end
     local items, menu = {}, nil
     table.insert(items, { text = _("‹ Back"), callback = function() UIManager:close(menu) end })
-    for _, book in ipairs(books) do
+    for book_index, book in ipairs(books) do
         table.insert(items, { text = book.name or ("#" .. tostring(book.id)), callback = safe(function() self:showBook(book) end) })
     end
     menu = Menu:new{ title = title, item_table = items, width = Screen:getWidth(), height = Screen:getHeight(), close_callback = function() UIManager:close(menu) end }
@@ -212,7 +212,7 @@ function Shamela:browseCategories()
     local categories, err = self:loadCategories(); UIManager:close(msg)
     if not categories then UIManager:show(InfoMessage:new{ text = T(_("Could not load catalog:\n%1"), err) }); return end
     local items, menu = {}, nil
-    for _, category in ipairs(categories) do
+    for category_index, category in ipairs(categories) do
         table.insert(items, { text = category.name, callback = safe(function()
             local loading = InfoMessage:new{ text = _("Loading books…") }; UIManager:show(loading); UIManager:forceRePaint()
             local b, e = self:loadBooks(category.id); UIManager:close(loading)

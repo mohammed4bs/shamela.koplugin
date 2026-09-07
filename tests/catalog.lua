@@ -37,6 +37,26 @@ local results = assert(plugin:searchBooks("48"))
 found = nil
 for _, b in ipairs(results) do if b.id == "21528" then found = b end end
 assert(found, "Search must find the same book as category browsing")
+-- Exercise the UI callbacks as well as the data-loading methods.
+local shown
+package.loaded["ui/uimanager"].show = function(_, widget) shown = widget end
+package.loaded.device.screen.getWidth = function() return 600 end
+package.loaded.device.screen.getHeight = function() return 800 end
+plugin:browseCategories()
+local category_callback
+for _, entry in ipairs(shown.item_table) do
+    if entry.text == "مسائل فقهية" then category_callback = entry.callback end
+end
+assert(category_callback, "category must appear in menu")
+category_callback()
+assert(shown.item_table and shown.title == "مسائل فقهية", "selecting category must open books, not an error dialog")
+local book_callback
+for _, entry in ipairs(shown.item_table) do
+    if entry.text:find("48", 1, true) then book_callback = entry.callback end
+end
+assert(book_callback)
+book_callback()
+assert(shown.buttons and shown.title:find("21528", 1, true), "selecting book must open download dialog")
 plugin:searchBooks("صيام &?")
 assert(requests[#requests]:find("%26%3F", 1, true), "search must escape query delimiters")
 search = { results = { items = {} } }
