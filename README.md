@@ -2,8 +2,9 @@
 
 Browse and search the official **المكتبة الشاملة** catalog on a KOReader device.
 Selecting a book reads its public, web-reader pages and converts them into a
-regular Arabic EPUB, which KOReader can open immediately. EPUB downloads do
-not require a Shamela API key.
+regular Arabic EPUB, which KOReader can open immediately. Categories, title
+search, and EPUB downloads all work without a Shamela API key, including on a
+fresh installation.
 
 ## Install
 
@@ -18,10 +19,14 @@ rename the extracted folder to `shamela.koplugin` before installing.
 
 ## Notes
 
-The first catalog visit downloads Shamela's master catalog and caches it under
-KOReader's data directory. The plugin only downloads a book when you select it.
-The catalog cache may use Shamela's sync API, but EPUB generation uses the
-public `shamela.ws` reader endpoint and does not need a key.
+An internet connection is required for browsing, title search, and downloads.
+Categories and their book listings are read from the public website; title
+search uses the website's public title-search service. For broad searches,
+use a more specific title if the website does not return your book.
+
+Upgrading from v0.1.0: replace the installed plugin folder with the new release
+and restart KOReader. No API setup or cached catalog is needed. Previous API
+settings and catalog files are no longer used.
 
 Shamela's API offers textual SQLite archives rather than EPUBs. This plugin
 intentionally converts only the text pages; scans and PDF links supplied by

@@ -1,25 +1,18 @@
 --[[--
 Shamela Library for KOReader
 
-Uses Shamela's official sync endpoint.  Unlike a conventional ebook site, the
-endpoint supplies each book as a ZIP archive with SQLite databases.  KOReader
-ships libarchive and SQLite bindings, so this plugin extracts the page database locally
-and writes a standards-compliant EPUB that can be read immediately.
-
-The endpoint and API key are configurable from the plugin menu. Enter your
-own Shamela API key before the first catalog sync.
+Browses categories, searches titles, and downloads text through Shamela's
+public website. No API key or pre-existing catalog is required.
 --]]--
 
 local Archiver = require("ffi/archiver")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
-local DataStorage = require("datastorage")
 local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local JSON = require("json")
 local Menu = require("ui/widget/menu")
-local SQ3 = require("lua-ljsqlite3/init")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local http = require("socket.http")
@@ -39,8 +32,6 @@ local Shamela = WidgetContainer:extend{
     is_doc_only = false,
 }
 
-local DEFAULT_API_URL = "https://dev.shamela.ws/api/v1"
-local DEFAULT_API_KEY = ""
 local DEFAULT_DOWNLOAD_DIR = "/mnt/us/documents/"
 local USER_AGENT = "Mozilla/5.0 (compatible; KOReader Shamela plugin)"
 local PUBLIC_SITE_URL = "https://shamela.ws"
@@ -61,26 +52,10 @@ local function ensureDir(path)
     return path
 end
 
-local function cacheDir()
-    return ensureDir(DataStorage:getFullDataDir() .. "/shamela/")
-end
-
 local function getDownloadDir()
     local path = G_reader_settings:readSetting("shamela_download_dir") or DEFAULT_DOWNLOAD_DIR
     if path:sub(-1) ~= "/" then path = path .. "/" end
     return ensureDir(path)
-end
-
-local function apiUrl()
-    return (G_reader_settings:readSetting("shamela_api_url") or DEFAULT_API_URL):gsub("/+$", "")
-end
-
-local function apiKey()
-    return G_reader_settings:readSetting("shamela_api_key") or DEFAULT_API_KEY
-end
-
-local function requestUrl(path)
-    return apiUrl() .. path .. (path:find("?", 1, true) and "&" or "?") .. "api_key=" .. socket_url.escape(apiKey())
 end
 
 local function httpGet(url)
@@ -98,23 +73,6 @@ local function httpGet(url)
     return table.concat(sink)
 end
 
-local function httpDownload(url, path)
-    local file, open_err = io.open(path, "wb")
-    if not file then return nil, open_err end
-    socketutil:set_timeout(30, 1800)
-    local requester = url:match("^https") and https.request or http.request
-    local ok, code = requester{
-        url = url,
-        sink = ltn12.sink.file(file),
-        headers = { ["User-Agent"] = USER_AGENT },
-    }
-    socketutil:reset_timeout()
-    if not ok or tonumber(code) < 200 or tonumber(code) >= 300 then
-        os.remove(path)
-        return nil, ok and ("HTTP " .. tostring(code)) or tostring(code)
-    end
-    return true
-end
 
 local function decodeJson(body)
     -- luajson's default null sentinel is a function (and therefore truthy).
@@ -124,62 +82,6 @@ local function decodeJson(body)
     return value
 end
 
-local function sqlQuote(s)
-    return "'" .. tostring(s or ""):gsub("'", "''") .. "'"
-end
-
-local function dbRows(path, sql)
-    local db = SQ3.open(path)
-    if not db then return nil, "Could not open SQLite database" end
-    local rows = {}
-    local ok, dataset, count = pcall(function() return db:exec(sql, "hi") end)
-    db:close()
-    if not ok then return nil, tostring(dataset) end
-    if not dataset or not count or count == 0 then return rows end
-    local headers = dataset[0]
-    for row_index = 1, count do
-        local row = {}
-        for column_index, header in ipairs(headers) do
-            row[header] = dataset[column_index][row_index]
-        end
-        table.insert(rows, row)
-    end
-    return rows
-end
-
-local function extractArchive(archive_path, files)
-    local archive = Archiver.Reader:new()
-    if not archive:open(archive_path) then return nil, archive.err or "invalid ZIP" end
-    -- Populate the archive index before extracting by name.
-    for _ in archive:iterate() do end
-    for name, destination in pairs(files) do
-        if archive.entries[name] and not archive:extractToPath(name, destination) then
-            archive:close()
-            return nil, archive.err or ("could not extract " .. name)
-        end
-    end
-    archive:close()
-    return true
-end
-
--- Shamela names a book database with its release number (for example
--- 1681-6.sqlite), so its exact member name is not known until the archive is
--- opened.  Extract the first regular file that matches the supplied pattern.
-local function extractFirstMatching(archive_path, pattern, destination)
-    local archive = Archiver.Reader:new()
-    if not archive:open(archive_path) then return nil, archive.err or "invalid ZIP" end
-    local selected
-    for entry in archive:iterate() do
-        if entry.mode == "file" and entry.path:match(pattern) then
-            selected = entry.path
-            break
-        end
-    end
-    local ok, err
-    if selected then ok, err = archive:extractToPath(selected, destination) else ok, err = nil, "no matching database in archive" end
-    archive:close()
-    return ok, err
-end
 
 local function escapeHtml(text)
     return tostring(text or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
@@ -229,36 +131,69 @@ local function writeEpub(output, title, author, pages)
     return true
 end
 
-function Shamela:ensureMaster()
-    local db_path = cacheDir() .. "master.db"
-    if lfs.attributes(db_path, "mode") == "file" then return db_path end
-    local archive_path = cacheDir() .. "master.zip"
-    local body, err = httpGet(requestUrl("/patches/master?version=0"))
-    if not body then return nil, err end
-    local data, json_err = decodeJson(body)
-    if not data or not data.patch_url then return nil, json_err or "Shamela returned no catalog archive" end
-    local ok, download_err = httpDownload(data.patch_url, archive_path)
-    if not ok then return nil, download_err end
-    local extracted, extract_err = extractArchive(archive_path, { ["book.sqlite"] = db_path, ["category.sqlite"] = cacheDir() .. "category.db", ["author.sqlite"] = cacheDir() .. "author.db" })
-    os.remove(archive_path)
-    if not extracted then return nil, extract_err end
-    -- The master archive contains separate databases. Keep the extracted book database as
-    -- the catalog source; categories are read from category.db below.
-    return db_path
+
+-- Only accept links for the requested public listing, not navigation or
+-- off-site links. Preserve site order and remove duplicate entries.
+local function listingLinks(html, kind, class_name)
+    local rows, seen = {}, {}
+    for attrs, label in html:gmatch("<a%s+([^>]-)>(.-)</a>") do
+        local href = attrs:match('href%s*=%s*"([^"]+)"') or attrs:match("href%s*=%s*'([^']+)'")
+        local classes = attrs:match('class%s*=%s*"([^"]+)"') or attrs:match("class%s*=%s*'([^']+)'") or ""
+        if href and (" " .. classes:gsub("%s+", " ") .. " "):find(" " .. class_name .. " ", 1, true) then
+            local path = href:gsub("^https://shamela%.ws", "")
+            local id = path:match("^/" .. kind .. "/(%d+)/?$")
+            -- Category badges contain book counts, not part of the name.
+            if kind == "category" then label = label:gsub("<span[^>]*>.-</span>", "") end
+            local name = util.htmlToPlainText(label):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+            if kind == "category" then name = name:gsub("^%d+%.%s*", "") end
+            if id and name ~= "" and not seen[id] then
+                seen[id] = true
+                rows[#rows + 1] = { id = id, name = name }
+            end
+        end
+    end
+    return rows
 end
 
 function Shamela:loadCategories()
-    local _, err = self:ensureMaster()
-    if err then return nil, err end
-    return dbRows(cacheDir() .. "category.db", "SELECT id, name, `order` FROM category WHERE is_deleted != 1 ORDER BY `order`")
+    local html, err = httpGet(PUBLIC_SITE_URL .. "/")
+    if not html then return nil, err end
+    local categories = listingLinks(html, "category", "cat_title")
+    if #categories == 0 then return nil, _("The public website returned no categories. Please try again later.") end
+    return categories
 end
 
-function Shamela:loadBooks(where, limit)
-    local _, err = self:ensureMaster()
-    if err then return nil, err end
-    local sql = "SELECT id, name, author, category FROM book WHERE (is_deleted IS NULL OR is_deleted != 1)"
-    if where then sql = sql .. " AND " .. where end
-    return dbRows(cacheDir() .. "master.db", sql .. " ORDER BY name LIMIT " .. tostring(limit or 120))
+function Shamela:loadBooks(category_id)
+    local id = tostring(category_id or "")
+    if not id:match("^%d+$") then return nil, _("Invalid category ID.") end
+    local html, err = httpGet(PUBLIC_SITE_URL .. "/category/" .. id)
+    if not html then return nil, err end
+    local books = listingLinks(html, "book", "book_title")
+    if #books == 0 then return nil, _("The public website returned no book listing. Please try again later.") end
+    return books
+end
+
+function Shamela:searchBooks(term)
+    local query = socket_url.escape(term)
+    local body, err = httpGet(PUBLIC_SITE_URL .. "/ajax/book/?q=" .. query .. "&term=" .. query)
+    if not body then return nil, err end
+    local data = decodeJson(body)
+    if type(data) ~= "table" or type(data.results) ~= "table" or type(data.results.items) ~= "table" then
+        return nil, _("The public website returned an invalid search response. Please try again later.")
+    end
+    local books, seen = {}, {}
+    for _, item in ipairs(data.results.items) do
+        if type(item) ~= "table" or (type(item.id) ~= "string" and type(item.id) ~= "number")
+                or not tostring(item.id):match("^%d+$") or type(item.text) ~= "string" then
+            return nil, _("The public website returned an invalid search result.")
+        end
+        local id = tostring(item.id)
+        if not seen[id] then
+            books[#books + 1] = { id = id, name = util.htmlToPlainText(item.text) }
+            seen[id] = true
+        end
+    end
+    return books
 end
 
 function Shamela:showBookList(books, title)
@@ -273,14 +208,15 @@ function Shamela:showBookList(books, title)
 end
 
 function Shamela:browseCategories()
-    local msg = InfoMessage:new{ text = _("Syncing Shamela catalog…") }; UIManager:show(msg); UIManager:forceRePaint()
+    local msg = InfoMessage:new{ text = _("Loading Shamela categories…") }; UIManager:show(msg); UIManager:forceRePaint()
     local categories, err = self:loadCategories(); UIManager:close(msg)
     if not categories then UIManager:show(InfoMessage:new{ text = T(_("Could not load catalog:\n%1"), err) }); return end
     local items, menu = {}, nil
-    table.insert(items, { text = _("All books (first 120)"), callback = safe(function() local b, e = self:loadBooks(); if b then self:showBookList(b, _("All books")) else UIManager:show(InfoMessage:new{ text = e }) end end) })
     for _, category in ipairs(categories) do
         table.insert(items, { text = category.name, callback = safe(function()
-            local b, e = self:loadBooks("category = " .. tonumber(category.id)); if b then self:showBookList(b, category.name) else UIManager:show(InfoMessage:new{ text = e }) end
+            local loading = InfoMessage:new{ text = _("Loading books…") }; UIManager:show(loading); UIManager:forceRePaint()
+            local b, e = self:loadBooks(category.id); UIManager:close(loading)
+            if b then self:showBookList(b, category.name) else UIManager:show(InfoMessage:new{ text = e }) end
         end) })
     end
     table.insert(items, 1, { text = _("‹ Back"), callback = function() UIManager:close(menu) end })
@@ -361,7 +297,7 @@ function Shamela:promptSearch()
             local term = dialog:getInputText(); UIManager:close(dialog)
             if term and term ~= "" then
                 local msg = InfoMessage:new{ text = _("Searching…") }; UIManager:show(msg); UIManager:forceRePaint()
-                local books, err = self:loadBooks("name LIKE " .. sqlQuote("%" .. term .. "%")); UIManager:close(msg)
+                local books, err = self:searchBooks(term); UIManager:close(msg)
                 if books then self:showBookList(books, T(_("Search: %1"), term)) else UIManager:show(InfoMessage:new{ text = err }) end
             end
         end) },
@@ -384,8 +320,6 @@ function Shamela:openHome()
         {{ text = _("Browse catalog"), callback = safe(function() self:browseCategories() end) }},
         {{ text = _("Search by title"), callback = safe(function() self:promptSearch() end) }},
         {{ text = _("Download folder…"), callback = function() self:promptSetting("shamela_download_dir", _("Download folder"), getDownloadDir()) end }},
-        {{ text = _("API settings…"), callback = function() self:promptSetting("shamela_api_url", _("Shamela API URL"), DEFAULT_API_URL) end }},
-        {{ text = _("API key…"), callback = function() self:promptSetting("shamela_api_key", _("Shamela API key (required)"), DEFAULT_API_KEY) end }},
         {{ text = _("‹ Back"), callback = function() UIManager:close(dialog) end }},
     } }
     UIManager:show(dialog)
